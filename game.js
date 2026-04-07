@@ -149,7 +149,7 @@
       this.bossSpawned  = false;
       // dog count: ramps quickly; boss rounds get +1 slot for the boss
       const baseDogs    = 2 + Math.floor(this.round * 1.8);
-      this.dogsTotal    = this.isBossRound ? baseDogs + 1 : baseDogs;
+      this.dogsTotal    = this.isBossRound ? 1 : baseDogs;
       this.spawnInterval = Math.max(0.55, 2.0 - this.round * 0.12);
       this.spawnTimer   = 1.2;
       this.prevChickenCount = this.chickenObjects.filter(c => c.alive).length;
@@ -268,8 +268,8 @@
         hitFlash: 0,
         scale: isBoss ? 2.2 : rand(0.85, 1.15),
         isBoss: isBoss,
-        hp: isBoss ? 3 : 1,
-        maxHp: isBoss ? 3 : 1,
+        hp: isBoss ? 5 : 1,
+        maxHp: isBoss ? 5 : 1,
         staggerTimer: 0,   // brief stagger on hit before resuming
       });
       this.dogsSpawned++;
@@ -298,7 +298,7 @@
             }
             dog.eating  = false;
             dog.fleeing = true;
-            dog.fleeDir = dog.facing < 0 ? -1 : 1;
+            dog.fleeDir = dog.facing < 0 ? 1 : -1;
           }
           continue;
         }
@@ -314,7 +314,7 @@
         if (!target) {
           // no chickens left
           dog.fleeing = true;
-          dog.fleeDir = dog.facing < 0 ? -1 : 1;
+          dog.fleeDir = dog.facing < 0 ? 1 : -1;
           continue;
         }
 
@@ -447,7 +447,7 @@
             this.addParticles(p.x, p.y, dog.isBoss ? '#FF4400' : '#FFD700', dog.isBoss ? 16 : 10, 180);
             if (dog.hp <= 0) {
               dog.fleeing = true;
-              dog.fleeDir = dog.facing < 0 ? -1 : 1;
+              dog.fleeDir = dog.facing < 0 ? 1 : -1;
               const pts = dog.isBoss ? 100 * this.round : 10 * this.round;
               this.score += pts;
               this.addFloatingText((dog.isBoss ? '¡JEFE HUYE! +' : '+') + pts,
@@ -694,7 +694,7 @@
 
       ctx.save();
       ctx.translate(dog.x, dog.y);
-      ctx.scale(dog.facing * dog.scale, dog.scale);
+      ctx.scale(-dog.facing * dog.scale, dog.scale);
 
       if (dog.hitFlash > 0) {
         ctx.globalAlpha = 0.55 + 0.45 * Math.sin(dog.hitFlash * 25);
