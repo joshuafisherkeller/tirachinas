@@ -58,6 +58,14 @@
     dogsTotal: 0,
     spawnTimer: 0,
     spawnInterval: 2.2,
+    isBossRound: false,
+    bossSpawned: false,
+
+    // ── Rooster power-up ──────────────────────────────────────────────────────
+    rooster: {
+      active: false, x: 0, y: 0, vx: 0,
+      animTimer: 0, scared: false, spawnCountdown: 20,
+    },
 
     aimX: 0,
     aimY: 0,
@@ -98,10 +106,11 @@
 
     // ── Update ──────────────────────────────────────────────────────────────
     update(dt) {
-      this.lastShot += dt; // using lastShot as elapsed since last fire
+      this.lastShot += dt;
       this.updateProjectiles(dt);
       this.updateDogs(dt);
       this.updateChickens(dt);
+      this.updateRooster(dt);
       this.updateParticles(dt);
       this.updateFloatingTexts(dt);
 
@@ -125,6 +134,8 @@
       this.particles   = [];
       this.floatingTexts = [];
       this.chickenObjects = [];
+      this.rooster.active = false;
+      this.rooster.spawnCountdown = rand(15, 25);
       this.spawnChickens(10);
       this.startRound();
     },
@@ -132,13 +143,27 @@
     startRound() {
       this.state        = 'playing';
       this.dogs         = [];
+      this.projectiles  = [];
       this.dogsSpawned  = 0;
-      this.dogsTotal    = 3 + (this.round - 1) * 2;
-      this.spawnTimer   = 1.5;
+      this.isBossRound  = (this.round % 4 === 0);
+      this.bossSpawned  = false;
+      // dog count: ramps quickly; boss rounds get +1 slot for the boss
+      const baseDogs    = 2 + Math.floor(this.round * 1.8);
+      this.dogsTotal    = this.isBossRound ? baseDogs + 1 : baseDogs;
+      this.spawnInterval = Math.max(0.55, 2.0 - this.round * 0.12);
+      this.spawnTimer   = 1.2;
       this.prevChickenCount = this.chickenObjects.filter(c => c.alive).length;
       this.roundLostChickens = 0;
-      this.addFloatingText('Round ' + this.round, canvas.width / 2, canvas.height * 0.3,
-        '#FFD700', 2.5, 52);
+      this.rooster.active = false;
+      this.rooster.scared = false;
+      this.rooster.spawnCountdown = rand(12, 22);
+
+      if (this.isBossRound) {
+        this.addFloatingText('¡JEFE PERRO!', canvas.width / 2, canvas.height * 0.28, '#FF2222', 3.5, 64);
+        this.addFloatingText('Round ' + this.round, canvas.width / 2, canvas.height * 0.42, '#FFD700', 2.5, 38);
+      } else {
+        this.addFloatingText('Round ' + this.round, canvas.width / 2, canvas.height * 0.3, '#FFD700', 2.5, 52);
+      }
     },
 
     endRound() {
@@ -218,24 +243,34 @@
 
     // ── Dog management ──────────────────────────────────────────────────────
     spawnDog() {
-      const fromLeft = Math.random() < 0.5;
+      const fromLeft   = Math.random() < 0.5;
       const zoneTop    = canvas.height * 0.55;
       const zoneBottom = canvas.height * 0.85;
-      const baseSpeed  = 60 + (this.round - 1) * 12;
+      const baseSpeed  = 55 + this.round * 15;
+
+      // boss spawns as the last dog on boss rounds
+      const isBoss = this.isBossRound && !this.bossSpawned &&
+                     (this.dogsSpawned === this.dogsTotal - 1);
+      if (isBoss) this.bossSpawned = true;
+
       this.dogs.push({
-        x: fromLeft ? -60 : canvas.width + 60,
-        y: rand(zoneTop, zoneBottom),
+        x: fromLeft ? (isBoss ? -120 : -60) : (isBoss ? canvas.width + 120 : canvas.width + 60),
+        y: isBoss ? canvas.height * 0.65 : rand(zoneTop, zoneBottom),
         alive: true,
         fleeing: false,
         fleeDir: fromLeft ? -1 : 1,
-        speed: baseSpeed,
+        speed: isBoss ? Math.max(35, baseSpeed * 0.55) : baseSpeed,
         facing: fromLeft ? 1 : -1,
         animTimer: rand(0, Math.PI * 2),
         eating: false,
         eatTimer: 0,
         eatTarget: null,
         hitFlash: 0,
-        scale: rand(0.85, 1.15),
+        scale: isBoss ? 2.2 : rand(0.85, 1.15),
+        isBoss: isBoss,
+        hp: isBoss ? 3 : 1,
+        maxHp: isBoss ? 3 : 1,
+        staggerTimer: 0,   // brief stagger on hit before resuming
       });
       this.dogsSpawned++;
     },
@@ -244,7 +279,8 @@
       for (const dog of this.dogs) {
         if (!dog.alive) continue;
         dog.animTimer += dt * 4;
-        dog.hitFlash = Math.max(0, dog.hitFlash - dt * 3);
+        dog.hitFlash = Math.max(0, dog.hitFlash - dt * 4);
+        if (dog.staggerTimer > 0) { dog.staggerTimer -= dt; continue; }
 
         if (dog.eating) {
           dog.eatTimer -= dt;
@@ -379,18 +415,49 @@
           continue;
         }
 
+        // hit rooster
+        const ro = this.rooster;
+        if (ro.active && !ro.scared &&
+            dist(p.x, p.y, ro.x, ro.y) < 30) {
+          p.alive = false;
+          ro.scared = true;
+          ro.vx *= 3.5;
+          const pts = 75 * this.round;
+          this.score += pts;
+          this.addFloatingText('¡EL GALLO! +' + pts, canvas.width / 2, canvas.height * 0.25, '#FF6600', 3.5, 46);
+          this.addParticles(ro.x, ro.y, '#FF6600', 22, 220);
+          // scare all non-boss dogs away
+          for (const dog of this.dogs) {
+            if (!dog.alive || dog.fleeing || dog.eating || dog.isBoss) continue;
+            dog.fleeing  = true;
+            dog.hitFlash = 0.6;
+            dog.fleeDir  = dog.facing < 0 ? -1 : 1;
+          }
+        }
+
         // hit dogs
         for (const dog of this.dogs) {
           if (!dog.alive || dog.fleeing || dog.eating) continue;
-          if (dist(p.x, p.y, dog.x, dog.y) < 28 * dog.scale) {
+          const hitR = dog.isBoss ? 52 : 28 * dog.scale;
+          if (dist(p.x, p.y, dog.x, dog.y) < hitR) {
             p.alive = false;
-            dog.fleeing  = true;
-            dog.hitFlash = 1;
-            dog.fleeDir  = dog.facing < 0 ? -1 : 1;
-            const pts = 10 * this.round;
-            this.score += pts;
-            this.addFloatingText('+' + pts, dog.x, dog.y - 40, '#FFD700', 1.5, 26);
-            this.addParticles(p.x, p.y, '#FFD700', 10, 150);
+            dog.hp--;
+            dog.hitFlash    = 1;
+            dog.staggerTimer = dog.isBoss ? 0.35 : 0;
+            this.addParticles(p.x, p.y, dog.isBoss ? '#FF4400' : '#FFD700', dog.isBoss ? 16 : 10, 180);
+            if (dog.hp <= 0) {
+              dog.fleeing = true;
+              dog.fleeDir = dog.facing < 0 ? -1 : 1;
+              const pts = dog.isBoss ? 100 * this.round : 10 * this.round;
+              this.score += pts;
+              this.addFloatingText((dog.isBoss ? '¡JEFE HUYE! +' : '+') + pts,
+                dog.x, dog.y - (dog.isBoss ? 80 : 40) * dog.scale,
+                dog.isBoss ? '#FF2200' : '#FFD700', dog.isBoss ? 2.5 : 1.5,
+                dog.isBoss ? 36 : 26);
+            } else {
+              // boss still alive — show remaining HP
+              this.addFloatingText('HP: ' + dog.hp, dog.x, dog.y - 80, '#FF6600', 1.2, 28);
+            }
             break;
           }
         }
@@ -412,6 +479,32 @@
           color,
           r: rand(2, 6),
         });
+      }
+    },
+
+    // ── Rooster ──────────────────────────────────────────────────────────────
+    updateRooster(dt) {
+      const r = this.rooster;
+      if (!r.active) {
+        if (this.round > 1) {
+          r.spawnCountdown -= dt;
+          if (r.spawnCountdown <= 0) {
+            const fromLeft = Math.random() < 0.5;
+            r.x   = fromLeft ? -60 : canvas.width + 60;
+            r.y   = rand(canvas.height * 0.57, canvas.height * 0.80);
+            r.vx  = fromLeft ? rand(55, 80) : -rand(55, 80);
+            r.animTimer = 0;
+            r.scared    = false;
+            r.active    = true;
+          }
+        }
+        return;
+      }
+      r.animTimer += dt * (r.scared ? 10 : 4);
+      r.x += r.vx * dt;
+      if (r.x < -120 || r.x > canvas.width + 120) {
+        r.active = false;
+        r.spawnCountdown = rand(18, 32);
       }
     },
 
@@ -447,6 +540,7 @@
 
       this.drawChickens();
       this.drawDogs();
+      if (this.rooster.active) this.drawRooster();
       this.drawProjectiles();
       this.drawParticles();
       this.drawSlingshot();
@@ -577,32 +671,67 @@
     },
 
     drawDog(dog) {
+      const bodyColor  = dog.isBoss ? '#2A1A0A' : '#A0643C';
+      const bellyColor = dog.isBoss ? '#5A3018' : '#C8A07A';
+      const legColor   = dog.isBoss ? '#1E1008' : '#8B5E3C';
+
+      // ── boss HP bar (drawn in world space before transform) ─────────────────
+      if (dog.isBoss && !dog.fleeing) {
+        const bw = 80, bh = 10;
+        const bx = dog.x - bw / 2, by = dog.y - 75;
+        ctx.fillStyle = '#400';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = '#F22';
+        ctx.fillRect(bx, by, bw * (dog.hp / dog.maxHp), bh);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.fillStyle = '#FFF';
+        ctx.font = 'bold 9px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('¡JEFE!', dog.x, by - 3);
+      }
+
       ctx.save();
       ctx.translate(dog.x, dog.y);
       ctx.scale(dog.facing * dog.scale, dog.scale);
 
       if (dog.hitFlash > 0) {
-        ctx.globalAlpha = 0.6 + 0.4 * Math.sin(dog.hitFlash * 20);
+        ctx.globalAlpha = 0.55 + 0.45 * Math.sin(dog.hitFlash * 25);
       }
 
-      const legSwing = Math.sin(dog.animTimer) * 15;
+      const legSwing  = dog.fleeing
+        ? Math.sin(dog.animTimer * 2.5) * 22  // frantic run
+        : Math.sin(dog.animTimer) * 15;
 
-      // tail (wag)
-      const wagAngle = dog.eating ? 0.4 : Math.sin(dog.animTimer * 1.5) * 0.5;
+      // tail — tucked between legs when fleeing, wagging when hunting
       ctx.save();
       ctx.translate(28, -10);
-      ctx.rotate(-wagAngle - 0.3);
-      ctx.strokeStyle = '#8B5E3C';
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.quadraticCurveTo(12, -10, 10, -20);
-      ctx.stroke();
+      if (dog.fleeing) {
+        // tail between legs (rotated steeply downward)
+        ctx.rotate(1.5);
+        ctx.strokeStyle = legColor;
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(5, 10, 3, 20);
+        ctx.stroke();
+      } else {
+        const wagAngle = dog.eating ? 0.4 : Math.sin(dog.animTimer * 1.5) * 0.5;
+        ctx.rotate(-wagAngle - 0.3);
+        ctx.strokeStyle = legColor;
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(12, -10, 10, -20);
+        ctx.stroke();
+      }
       ctx.restore();
 
       // back legs
-      ctx.strokeStyle = '#8B5E3C';
+      ctx.strokeStyle = legColor;
       ctx.lineWidth = 5;
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -616,20 +745,21 @@
       ctx.lineTo(10 + legSwing, 30);
       ctx.stroke();
 
-      // body
-      ctx.fillStyle = dog.hitFlash > 0 ? '#FFAA44' : '#A0643C';
+      // body — crouched/lower when fleeing
+      const bodyTilt = dog.fleeing ? 0.25 : 0;
+      ctx.fillStyle = dog.hitFlash > 0 ? (dog.isBoss ? '#FF6600' : '#FFAA44') : bodyColor;
       ctx.beginPath();
-      ctx.ellipse(0, 0, 30, 16, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, dog.fleeing ? 4 : 0, 30, dog.fleeing ? 12 : 16, bodyTilt, 0, Math.PI * 2);
       ctx.fill();
 
       // belly
-      ctx.fillStyle = '#C8A07A';
+      ctx.fillStyle = bellyColor;
       ctx.beginPath();
       ctx.ellipse(0, 6, 20, 10, 0, 0, Math.PI * 2);
       ctx.fill();
 
       // front legs
-      ctx.strokeStyle = '#8B5E3C';
+      ctx.strokeStyle = legColor;
       ctx.lineWidth = 5;
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -643,56 +773,181 @@
       ctx.lineTo(-18 - legSwing, 30);
       ctx.stroke();
 
-      // neck
-      ctx.fillStyle = '#A0643C';
+      // neck — head lowered when fleeing
+      const headY = dog.fleeing ? 2 : -8;
+      ctx.fillStyle = bodyColor;
       ctx.beginPath();
-      ctx.ellipse(-24, -8, 12, 9, -0.4, 0, Math.PI * 2);
+      ctx.ellipse(-24, headY + 2, 12, 9, dog.fleeing ? 0.3 : -0.4, 0, Math.PI * 2);
       ctx.fill();
 
       // head
-      ctx.fillStyle = '#A0643C';
+      ctx.fillStyle = bodyColor;
       ctx.beginPath();
-      ctx.ellipse(-32, -16, 14, 11, -0.2, 0, Math.PI * 2);
+      ctx.ellipse(-32, headY - 6, 14, 11, dog.fleeing ? 0.2 : -0.2, 0, Math.PI * 2);
       ctx.fill();
 
       // snout
-      ctx.fillStyle = '#C8A07A';
+      ctx.fillStyle = bellyColor;
       ctx.beginPath();
-      ctx.ellipse(-42, -14, 9, 6, 0, 0, Math.PI * 2);
+      ctx.ellipse(-42, headY - 4, 9, 6, 0, 0, Math.PI * 2);
       ctx.fill();
 
       // nose
       ctx.fillStyle = '#333';
       ctx.beginPath();
-      ctx.ellipse(-48, -16, 3, 2, 0, 0, Math.PI * 2);
+      ctx.ellipse(-48, headY - 6, 3, 2, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // mouth (eating = open)
+      // mouth
       if (dog.eating) {
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(-43, -12, 5, 0, Math.PI);
+        ctx.arc(-43, headY - 2, 5, 0, Math.PI);
         ctx.stroke();
       }
 
-      // eye
-      ctx.fillStyle = '#111';
-      ctx.beginPath();
-      ctx.arc(-36, -20, 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#FFF';
-      ctx.beginPath();
-      ctx.arc(-35, -21, 1, 0, Math.PI * 2);
-      ctx.fill();
+      // eye — X eyes when fleeing, normal otherwise
+      if (dog.fleeing) {
+        ctx.strokeStyle = '#FFF';
+        ctx.lineWidth = 2;
+        const ex = -36, ey = headY - 10;
+        ctx.beginPath();
+        ctx.moveTo(ex - 4, ey - 4); ctx.lineTo(ex + 4, ey + 4);
+        ctx.moveTo(ex + 4, ey - 4); ctx.lineTo(ex - 4, ey + 4);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = dog.isBoss ? '#FF2200' : '#111';
+        ctx.beginPath();
+        ctx.arc(-36, headY - 10, dog.isBoss ? 4 : 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#FFF';
+        ctx.beginPath();
+        ctx.arc(-35, headY - 11, 1, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       // ear
-      ctx.fillStyle = '#7A4A2C';
+      ctx.fillStyle = dog.isBoss ? '#1A0A00' : '#7A4A2C';
       ctx.beginPath();
-      ctx.ellipse(-30, -25, 7, 5, -0.8, 0, Math.PI * 2);
+      ctx.ellipse(-30, headY - 15, 7, 5, -0.8, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.restore();
+
+      // ── fleeing: stars spinning above head ─────────────────────────────────
+      if (dog.fleeing) {
+        const starCount = 3;
+        const orbitR    = 18 * dog.scale;
+        const baseY     = dog.y - 42 * dog.scale;
+        for (let i = 0; i < starCount; i++) {
+          const angle = dog.animTimer * 5 + (i / starCount) * Math.PI * 2;
+          const sx = dog.x + Math.cos(angle) * orbitR;
+          const sy = baseY + Math.sin(angle) * orbitR * 0.4;
+          ctx.fillStyle = '#FFD700';
+          ctx.font = `${Math.round(14 * dog.scale)}px Arial`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('★', sx, sy);
+        }
+        ctx.textBaseline = 'alphabetic';
+      }
+    },
+
+    drawRooster() {
+      const r = this.rooster;
+      ctx.save();
+      ctx.translate(r.x, r.y);
+      const dir = r.vx >= 0 ? 1 : -1;
+      ctx.scale(dir * 1.35, 1.35);
+
+      const leg = Math.sin(r.animTimer) * 10;
+
+      // legs
+      ctx.strokeStyle = '#C8860A';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-4, 12); ctx.lineTo(-6 + leg, 24); ctx.lineTo(-10 + leg, 24); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(4, 12);  ctx.lineTo(6 - leg, 24); ctx.lineTo(10 - leg, 24);  ctx.stroke();
+
+      // body – golden
+      ctx.fillStyle = r.scared ? '#FF8800' : '#D4A020';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 20, 14, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // iridescent tail feathers
+      const tailColors = ['#2244AA', '#228844', '#9922AA'];
+      for (let i = 0; i < 3; i++) {
+        const a = -0.3 + i * 0.3;
+        ctx.save();
+        ctx.translate(16, -4);
+        ctx.rotate(a + Math.sin(r.animTimer * 2 + i) * 0.08);
+        ctx.fillStyle = tailColors[i];
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // wing
+      ctx.fillStyle = '#B8900E';
+      ctx.beginPath();
+      ctx.ellipse(4, 2, 14, 8, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // neck
+      ctx.fillStyle = '#D4A020';
+      ctx.beginPath();
+      ctx.ellipse(-16, -10, 9, 7, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // head
+      ctx.fillStyle = '#D4A020';
+      ctx.beginPath();
+      ctx.arc(-22, -18, 9, 0, Math.PI * 2);
+      ctx.fill();
+
+      // big red comb
+      ctx.fillStyle = '#CC1111';
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(-24 + i * 4, -25 - i % 2 * 3, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // wattle
+      ctx.fillStyle = '#CC1111';
+      ctx.beginPath();
+      ctx.ellipse(-21, -12, 4, 6, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // beak
+      ctx.fillStyle = '#E8A020';
+      ctx.beginPath();
+      ctx.moveTo(-30, -18); ctx.lineTo(-36, -17); ctx.lineTo(-30, -15);
+      ctx.closePath(); ctx.fill();
+
+      // eye
+      ctx.fillStyle = '#111';
+      ctx.beginPath(); ctx.arc(-24, -20, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#FFF';
+      ctx.beginPath(); ctx.arc(-23, -21, 1, 0, Math.PI * 2); ctx.fill();
+
+      ctx.restore();
+
+      // !! label so player knows to shoot it
+      if (!r.scared) {
+        ctx.save();
+        ctx.font = `bold ${Math.max(11, canvas.width * 0.013)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#FFD700';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 4;
+        ctx.fillText('¡DISPARA!', r.x, r.y - 44);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+      }
     },
 
     drawProjectiles() {
@@ -928,40 +1183,59 @@
       const W = canvas.width;
       const H = canvas.height;
 
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      // light vignette — keep the farm photo visible
+      const vign = ctx.createRadialGradient(W/2, H/2, H*0.1, W/2, H/2, H*0.85);
+      vign.addColorStop(0, 'rgba(0,0,0,0.15)');
+      vign.addColorStop(1, 'rgba(0,0,0,0.65)');
+      ctx.fillStyle = vign;
       ctx.fillRect(0, 0, W, H);
 
-      ctx.textAlign   = 'center';
+      ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
 
-      // Title
-      ctx.font      = `bold ${Math.min(80, W * 0.14)}px Arial`;
-      ctx.fillStyle = '#FFD700';
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur  = 12;
-      ctx.fillText('¡Resortera Ranchera!', W / 2, H * 0.30);
+      // semi-transparent panel behind text so it's readable over any bg
+      const panelH = H * 0.72;
+      const panelW = Math.min(W * 0.88, 700);
+      const panelX = (W - panelW) / 2;
+      const panelY = H * 0.12;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath();
+      ctx.roundRect(panelX, panelY, panelW, panelH, 18);
+      ctx.fill();
 
-      ctx.font      = `bold ${Math.min(34, W * 0.07)}px Arial`;
+      // Title — smaller so it fits on any screen
+      const titleSize = Math.min(52, W * 0.075);
+      ctx.font        = `bold ${titleSize}px Arial`;
+      ctx.fillStyle   = '#FFD700';
+      ctx.shadowColor = 'rgba(0,0,0,0.9)';
+      ctx.shadowBlur  = 10;
+      ctx.fillText('¡Resortera Ranchera!', W / 2, H * 0.26);
+
+      ctx.font      = `bold ${Math.min(26, W * 0.05)}px Arial`;
       ctx.fillStyle = '#FFF8DC';
-      ctx.fillText('Defensa de la Granja', W / 2, H * 0.42);
+      ctx.fillText('Defensa de la Granja', W / 2, H * 0.38);
 
       ctx.shadowBlur = 0;
 
-      ctx.font      = `${Math.min(20, W * 0.045)}px Arial`;
+      ctx.font      = `${Math.min(17, W * 0.038)}px Arial`;
       ctx.fillStyle = '#DDD';
-      ctx.fillText('Protect your chickens from wild dogs!', W / 2, H * 0.54);
-      ctx.fillText('Drag to aim · release to fire', W / 2, H * 0.61);
+      ctx.fillText('🐔 Protect your chickens from wild dogs!', W / 2, H * 0.50);
+      ctx.fillText('🐓 Shoot the rooster to scare all dogs away!', W / 2, H * 0.58);
+      ctx.fillText('Drag to aim · release to fire', W / 2, H * 0.66);
 
       if (this.highScore > 0) {
-        ctx.font      = `bold ${Math.min(22, W * 0.05)}px Arial`;
+        ctx.font      = `bold ${Math.min(20, W * 0.04)}px Arial`;
         ctx.fillStyle = '#FFD700';
-        ctx.fillText('Best: ' + this.highScore, W / 2, H * 0.70);
+        ctx.fillText('Best: ' + this.highScore, W / 2, H * 0.74);
       }
 
       if (this.blinkVisible) {
-        ctx.font      = `bold ${Math.min(28, W * 0.06)}px Arial`;
+        ctx.font      = `bold ${Math.min(26, W * 0.05)}px Arial`;
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillText('TAP TO PLAY', W / 2, H * 0.82);
+        ctx.shadowColor = 'rgba(0,0,0,0.9)';
+        ctx.shadowBlur  = 8;
+        ctx.fillText('TAP TO PLAY', W / 2, H * 0.87);
+        ctx.shadowBlur = 0;
       }
 
       ctx.textBaseline = 'alphabetic';
