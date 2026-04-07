@@ -9,8 +9,21 @@
 
   // ─── Resize ────────────────────────────────────────────────────────────────
   function resize() {
-    canvas.width  = window.innerWidth;
-    canvas.height = window.innerHeight;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const aspect = 16 / 9;
+    let cw, ch;
+    if (W / H >= aspect) {
+      ch = H;
+      cw = Math.round(H * aspect);
+    } else {
+      cw = W;
+      ch = Math.round(W / aspect);
+    }
+    canvas.width  = cw;
+    canvas.height = ch;
+    canvas.style.left = Math.round((W - cw) / 2) + 'px';
+    canvas.style.top  = Math.round((H - ch) / 2) + 'px';
   }
   window.addEventListener('resize', () => { resize(); });
   resize();
@@ -48,8 +61,9 @@
 
     aimX: 0,
     aimY: 0,
-    lastShot: -999,
-    cooldown: 0.5,
+    sling: { pulling: false, pullX: 0, pullY: 0 },
+    lastShot: 1,
+    cooldown: 0.4,
 
     // round-end bookkeeping
     roundLostChickens: 0,
@@ -315,26 +329,39 @@
     },
 
     // ── Projectiles ──────────────────────────────────────────────────────────
-    shoot(tx, ty) {
-      const now = this._elapsed || 0;
-      // use lastShot as time-since-last
+    getSlingOrigin() {
+      return { x: canvas.width / 2, y: canvas.height * 0.865 };
+    },
+
+    getClampedPull(px, py) {
+      const o = this.getSlingOrigin();
+      const maxPull = Math.min(canvas.width, canvas.height) * 0.18;
+      const dx = px - o.x;
+      const dy = py - o.y;
+      const d  = Math.hypot(dx, dy) || 0.001;
+      const cd = Math.min(d, maxPull);
+      return { x: o.x + (dx / d) * cd, y: o.y + (dy / d) * cd, d: cd, maxPull };
+    },
+
+    shootFromPull(px, py) {
       if (this.lastShot < this.cooldown) return;
-      this.lastShot = 0;
-
-      const sx = canvas.width  / 2;
-      const sy = canvas.height * 0.92;
-      const dx = tx - sx;
-      const dy = ty - sy;
-      const d  = Math.hypot(dx, dy) || 1;
-      const speed = 1400;
-
+      const o  = this.getSlingOrigin();
+      const p  = this.getClampedPull(px, py);
+      const dx = p.x - o.x;
+      const dy = p.y - o.y;
+      const power = p.d / p.maxPull;   // 0–1
+      if (power < 0.08) return;        // ignore accidental micro-taps
+      const speed = 900 + power * 900; // 900–1800 px/s
+      const d = Math.hypot(dx, dy) || 0.001;
       this.projectiles.push({
-        x: sx, y: sy,
+        x: o.x, y: o.y,
         vx: (dx / d) * speed,
         vy: (dy / d) * speed,
         trail: [],
         alive: true,
       });
+      this.lastShot = 0;
+      this.addParticles(o.x, o.y, '#C8A07A', 6, 120);
     },
 
     updateProjectiles(dt) {
@@ -423,7 +450,6 @@
       this.drawProjectiles();
       this.drawParticles();
       this.drawSlingshot();
-      this.drawCrosshair();
       this.drawFloatingTexts();
       this.drawHUD();
 
@@ -726,62 +752,114 @@
     },
 
     drawSlingshot() {
-      const W = canvas.width;
-      const H = canvas.height;
-      const cx = W / 2;
-      const baseY = H + 30; // handle below screen
-      const forkH = H * 0.88;
-      const tipLX = cx - 28;
-      const tipRX = cx + 28;
-      const tipY  = forkH - 22;
+      const W   = canvas.width;
+      const H   = canvas.height;
+      const cx  = W / 2;
+      const o   = this.getSlingOrigin();       // fork centre (stone rest point)
+      const tipSpread = W * 0.022;
+      const tipRise   = H * 0.032;
+      const tipLX = cx - tipSpread;
+      const tipRX = cx + tipSpread;
+      const tipY  = o.y - tipRise;
+      const baseY = H + 40;
 
-      // handle
+      // ── wood ───────────────────────────────────────────────────────────────
       ctx.strokeStyle = '#6B3A1F';
-      ctx.lineWidth   = 12;
+      ctx.lineWidth   = Math.max(8, W * 0.009);
       ctx.lineCap     = 'round';
       ctx.lineJoin    = 'round';
-      ctx.beginPath();
+
+      ctx.beginPath();                    // handle
       ctx.moveTo(cx, baseY);
-      ctx.lineTo(cx, forkH);
+      ctx.lineTo(cx, o.y);
       ctx.stroke();
 
-      // fork left
-      ctx.beginPath();
-      ctx.moveTo(cx, forkH);
+      ctx.beginPath();                    // left fork
+      ctx.moveTo(cx, o.y);
       ctx.lineTo(tipLX, tipY);
       ctx.stroke();
 
-      // fork right
-      ctx.beginPath();
-      ctx.moveTo(cx, forkH);
+      ctx.beginPath();                    // right fork
+      ctx.moveTo(cx, o.y);
       ctx.lineTo(tipRX, tipY);
       ctx.stroke();
 
-      // rubber bands
-      const ax = this.aimX;
-      const ay = this.aimY;
-      const bandColor = '#8B6914';
-      ctx.strokeStyle = bandColor;
-      ctx.lineWidth   = 3;
+      // ── stone position ─────────────────────────────────────────────────────
+      let sx, sy;
+      if (this.sling.pulling) {
+        const cp = this.getClampedPull(this.sling.pullX, this.sling.pullY);
+        sx = cp.x;
+        sy = cp.y;
+      } else {
+        sx = o.x;
+        sy = o.y;
+      }
+
+      // ── trajectory preview (dots) ──────────────────────────────────────────
+      if (this.sling.pulling && this.state === 'playing') {
+        const cp    = this.getClampedPull(this.sling.pullX, this.sling.pullY);
+        const power = cp.d / cp.maxPull;
+        if (power >= 0.08) {
+          const dx    = cp.x - o.x;
+          const dy    = cp.y - o.y;
+          const mag   = Math.hypot(dx, dy) || 0.001;
+          const spd   = 900 + power * 900;
+          let tx = o.x, ty = o.y;
+          let tvx = (dx / mag) * spd;
+          let tvy = (dy / mag) * spd;
+          const simDt = 0.018;
+          ctx.save();
+          for (let i = 1; i <= 38; i++) {
+            tx  += tvx * simDt;
+            ty  += tvy * simDt;
+            if (tx < 0 || tx > W || ty < 0 || ty > H) break;
+            const alpha = 0.7 * (1 - i / 38);
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle   = '#FFF';
+            ctx.beginPath();
+            ctx.arc(tx, ty, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+      }
+
+      // ── rubber bands ───────────────────────────────────────────────────────
+      ctx.strokeStyle = '#8B6914';
+      ctx.lineWidth   = Math.max(2.5, W * 0.003);
+      ctx.lineCap     = 'round';
 
       ctx.beginPath();
       ctx.moveTo(tipLX, tipY);
-      ctx.lineTo(ax, ay);
+      ctx.lineTo(sx, sy);
       ctx.stroke();
 
       ctx.beginPath();
       ctx.moveTo(tipRX, tipY);
-      ctx.lineTo(ax, ay);
+      ctx.lineTo(sx, sy);
       ctx.stroke();
 
-      // stone at aim point
-      const grad = ctx.createRadialGradient(ax - 2, ay - 2, 1, ax, ay, 8);
+      // ── stone ──────────────────────────────────────────────────────────────
+      const sr   = this.sling.pulling ? 9 : 7;
+      const grad = ctx.createRadialGradient(sx - 2, sy - 2, 1, sx, sy, sr);
       grad.addColorStop(0, '#DDD');
       grad.addColorStop(1, '#555');
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(ax, ay, 8, 0, Math.PI * 2);
+      ctx.arc(sx, sy, sr, 0, Math.PI * 2);
       ctx.fill();
+
+      // ── hint when idle ─────────────────────────────────────────────────────
+      if (!this.sling.pulling && this.state === 'playing' && this.blinkVisible) {
+        ctx.save();
+        ctx.globalAlpha  = 0.6;
+        ctx.fillStyle    = '#FFF';
+        ctx.font         = `${Math.max(13, W * 0.016)}px Arial`;
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('drag to aim · release to fire', cx, H - 6);
+        ctx.restore();
+      }
     },
 
     drawCrosshair() {
@@ -872,7 +950,7 @@
       ctx.font      = `${Math.min(20, W * 0.045)}px Arial`;
       ctx.fillStyle = '#DDD';
       ctx.fillText('Protect your chickens from wild dogs!', W / 2, H * 0.54);
-      ctx.fillText('Aim with mouse / touch · Click / tap to fire', W / 2, H * 0.61);
+      ctx.fillText('Drag to aim · release to fire', W / 2, H * 0.61);
 
       if (this.highScore > 0) {
         ctx.font      = `bold ${Math.min(22, W * 0.05)}px Arial`;
@@ -996,45 +1074,52 @@
     },
 
     bindEvents() {
-      // Mouse
-      canvas.addEventListener('mousemove', (e) => {
+      const pos = (e) => {
         const r = canvas.getBoundingClientRect();
-        this.aimX = e.clientX - r.left;
-        this.aimY = e.clientY - r.top;
-      });
+        // Support both pointer and touch events
+        const src = e.touches ? e.touches[0] || e.changedTouches[0] : e;
+        return {
+          x: (src.clientX - r.left) * (canvas.width  / r.width),
+          y: (src.clientY - r.top)  * (canvas.height / r.height),
+        };
+      };
 
-      canvas.addEventListener('click', (e) => {
-        const r = canvas.getBoundingClientRect();
-        const x = e.clientX - r.left;
-        const y = e.clientY - r.top;
-        this.handleInput(x, y);
-      });
-
-      // Touch
-      canvas.addEventListener('touchstart', (e) => {
+      const onDown = (e) => {
         e.preventDefault();
-        const r = canvas.getBoundingClientRect();
-        const t = e.changedTouches[0];
-        this.aimX = t.clientX - r.left;
-        this.aimY = t.clientY - r.top;
-      }, { passive: false });
+        const { x, y } = pos(e);
+        if (this.state !== 'playing') {
+          this.handleInput(x, y);
+          return;
+        }
+        this.sling.pulling = true;
+        this.sling.pullX   = x;
+        this.sling.pullY   = y;
+        this.aimX = x;
+        this.aimY = y;
+      };
 
-      canvas.addEventListener('touchmove', (e) => {
+      const onMove = (e) => {
         e.preventDefault();
-        const r = canvas.getBoundingClientRect();
-        const t = e.changedTouches[0];
-        this.aimX = t.clientX - r.left;
-        this.aimY = t.clientY - r.top;
-      }, { passive: false });
+        if (!this.sling.pulling) return;
+        const { x, y } = pos(e);
+        this.sling.pullX = x;
+        this.sling.pullY = y;
+        this.aimX = x;
+        this.aimY = y;
+      };
 
-      canvas.addEventListener('touchend', (e) => {
+      const onUp = (e) => {
         e.preventDefault();
-        const r = canvas.getBoundingClientRect();
-        const t = e.changedTouches[0];
-        const x = t.clientX - r.left;
-        const y = t.clientY - r.top;
-        this.handleInput(x, y);
-      }, { passive: false });
+        if (!this.sling.pulling) return;
+        this.sling.pulling = false;
+        const { x, y } = pos(e);
+        if (this.state === 'playing') this.shootFromPull(x, y);
+      };
+
+      canvas.addEventListener('pointerdown',   onDown, { passive: false });
+      canvas.addEventListener('pointermove',   onMove, { passive: false });
+      canvas.addEventListener('pointerup',     onUp,   { passive: false });
+      canvas.addEventListener('pointercancel', ()  => { this.sling.pulling = false; });
     },
   };
 

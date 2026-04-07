@@ -16,5 +16,24 @@ html, body {
 
 #gameCanvas {
   display: block;
+  position: absolute;
   cursor: none;
+}
+
+#rotate-msg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: #1a1a0e;
+  color: #f5e6a0;
+  font-family: Arial, sans-serif;
+  font-size: 1.4em;
+  text-align: center;
+  justify-content: center;
+  align-items: center;
+  z-index: 999;
+}
+
+@media (orientation: portrait) {
+  #rotate-msg { display: flex; }
 }
